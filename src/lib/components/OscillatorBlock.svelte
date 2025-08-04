@@ -239,14 +239,14 @@
 <style>
   .oscillator-block {
     position: absolute;
-    height: 50px;
-    background: linear-gradient(135deg, #4CAF50, #45a049);
-    border: 2px solid #2E7D32;
+    height: 80px;
+    background: #628878;
+    border: 2px solid #727272;
     border-radius: 6px;
     cursor: move;
     user-select: none;
     transition: all 0.2s ease;
-    min-width: 60px;
+    min-width: 80px;
   }
 
   .oscillator-block:hover {
@@ -273,7 +273,7 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    padding: 4px;
+    padding: 0px 4px 0px 8px;
     color: white;
     font-size: 0.8rem;
   }
@@ -320,10 +320,10 @@
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.3);
     color: white;
-    padding: 2px 4px;
+    padding: 0px 0px;
     border-radius: 3px;
     font-size: 0.7rem;
-    width: 100%;
+    width: 95%;
   }
 
   .frequency-input::placeholder {
@@ -333,7 +333,7 @@
   .block-footer {
     display: flex;
     justify-content: center;
-    margin-top: 2px;
+    margin-top: 1px;
   }
 
   .duration {
@@ -344,10 +344,10 @@
 
   .resize-handle {
     position: absolute;
-    right: -4px;
+    right: -1px;
     top: 0;
     bottom: 0;
-    width: 8px;
+    width: 4px;
     cursor: ew-resize;
     background: rgba(255, 255, 255, 0.2);
     border-radius: 2px;

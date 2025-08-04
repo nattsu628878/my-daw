@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import OscillatorBlock from './OscillatorBlock.svelte';
 
   // タイムラインの状態管理
   let currentTime = $state(0);
@@ -11,6 +12,24 @@
     { id: 2, name: 'Track 2', frequency: 880, type: 'triangle' }
   ]);
 
+  // オシレーターブロック管理
+  let blocks = $state([
+    { id: 1, trackId: 1, startTime: 0, duration: 4, frequency: 440, type: 'sine' },
+    { id: 2, trackId: 1, startTime: 6, duration: 3, frequency: 660, type: 'triangle' },
+    { id: 3, trackId: 2, startTime: 2, duration: 5, frequency: 880, type: 'square' }
+  ]);
+  let selectedBlockId: number | null = null;
+  let nextBlockId = 4;
+
+  // 右クリックメニュー管理
+  let contextMenu = $state({
+    visible: false,
+    x: 0,
+    y: 0,
+    trackId: null as number | null,
+    clickTime: 0
+  });
+
   // Web Audio API関連
   let audioContext: AudioContext | null = null;
   let oscillators: Map<number, OscillatorNode> = new Map();
@@ -20,7 +39,7 @@
   // タイムラインの設定
   const pixelsPerSecond = 50 * zoom;
   const timelineHeight = 400;
-  const trackHeight = 60;
+  const trackHeight = 100;
 
   // 再生制御
   let animationFrameId: number;
@@ -36,12 +55,12 @@
     }
   }
 
-  // オシレーター作成
-  function createOscillator(trackId: number, frequency: number, type: OscillatorType) {
+  // オシレーター作成（ブロックベース）
+  function createOscillator(blockId: number, frequency: number, type: OscillatorType) {
     if (!audioContext || !masterGain) return;
 
     // 既存のオシレーターを停止・削除
-    stopOscillator(trackId);
+    stopOscillator(blockId);
 
     const oscillator = audioContext.createOscillator();
     const gainNode = audioContext.createGain();
@@ -49,49 +68,66 @@
     oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
     oscillator.type = type;
     
-    gainNode.gain.setValueAtTime(0.1, audioContext.currentTime); // 個別トラックのボリューム
+    gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
     
     oscillator.connect(gainNode);
     gainNode.connect(masterGain);
     
-    oscillators.set(trackId, oscillator);
-    gainNodes.set(trackId, gainNode);
+    oscillators.set(blockId, oscillator);
+    gainNodes.set(blockId, gainNode);
     
     oscillator.start();
   }
 
   // オシレーター停止
-  function stopOscillator(trackId: number) {
-    const oscillator = oscillators.get(trackId);
-    const gainNode = gainNodes.get(trackId);
+  function stopOscillator(blockId: number) {
+    const oscillator = oscillators.get(blockId);
+    const gainNode = gainNodes.get(blockId);
     
     if (oscillator) {
       oscillator.stop();
-      oscillators.delete(trackId);
+      oscillators.delete(blockId);
     }
     
     if (gainNode) {
-      gainNodes.delete(trackId);
+      gainNodes.delete(blockId);
     }
   }
 
   // 全オシレーター停止
   function stopAllOscillators() {
-    oscillators.forEach((oscillator, trackId) => {
+    oscillators.forEach((oscillator, blockId) => {
       oscillator.stop();
     });
     oscillators.clear();
     gainNodes.clear();
   }
 
-  // 全トラック再生開始
-  function startAllOscillators() {
-    if (!audioContext) {
-      initAudioContext();
-    }
+  // 現在再生中のブロックを取得
+  function getActiveBlocks(): typeof blocks {
+    return blocks.filter(block => {
+      const blockEnd = block.startTime + block.duration;
+      return currentTime >= block.startTime && currentTime < blockEnd;
+    });
+  }
+
+  // 再生中のブロックを更新
+  function updateActiveOscillators() {
+    const activeBlocks = getActiveBlocks();
     
-    tracks.forEach(track => {
-      createOscillator(track.id, track.frequency, track.type as OscillatorType);
+    // 現在アクティブでないブロックのオシレーターを停止
+    blocks.forEach(block => {
+      const isActive = activeBlocks.some(activeBlock => activeBlock.id === block.id);
+      if (!isActive) {
+        stopOscillator(block.id);
+      }
+    });
+    
+    // アクティブなブロックのオシレーターを開始
+    activeBlocks.forEach(block => {
+      if (!oscillators.has(block.id)) {
+        createOscillator(block.id, block.frequency, block.type as OscillatorType);
+      }
     });
   }
 
@@ -110,7 +146,6 @@
     
     isPlaying = true;
     startTime = performance.now() - (currentTime * 1000);
-    startAllOscillators();
     animate();
   }
 
@@ -133,15 +168,25 @@
       return;
     }
     
+    updateActiveOscillators();
     animationFrameId = requestAnimationFrame(animate);
   }
 
   function seekTo(event: MouseEvent) {
+    // ブロック選択中はシーク機能を無効化
+    if (selectedBlockId !== null) {
+      return;
+    }
+    
     const target = event.currentTarget as HTMLElement;
     const rect = target.getBoundingClientRect();
     const x = event.clientX - rect.left;
     currentTime = (x / pixelsPerSecond);
     currentTime = Math.max(0, Math.min(currentTime, duration));
+    
+    if (isPlaying) {
+      updateActiveOscillators();
+    }
   }
 
   function addTrack() {
@@ -156,35 +201,129 @@
 
   function removeTrack(trackId: number) {
     tracks = tracks.filter(track => track.id !== trackId);
-    stopOscillator(trackId);
+    // トラックに関連するブロックも削除
+    blocks = blocks.filter(block => block.trackId !== trackId);
+  }
+
+  // ブロック追加
+  function addBlock(trackId: number, startTime: number) {
+    const newBlock = {
+      id: nextBlockId++,
+      trackId,
+      startTime,
+      duration: 4,
+      frequency: 440,
+      type: 'sine'
+    };
+    blocks = [...blocks, newBlock];
+  }
+
+  // ブロック更新
+  function updateBlock(event: CustomEvent) {
+    const { id, startTime, duration, frequency, type, trackId } = event.detail;
+    blocks = blocks.map(block => 
+      block.id === id ? { ...block, startTime, duration, frequency, type, trackId } : block
+    );
+    
+    // 再生中なら即座に更新
+    if (isPlaying) {
+      const block = blocks.find(b => b.id === id);
+      if (block) {
+        const isActive = currentTime >= block.startTime && currentTime < block.startTime + block.duration;
+        if (isActive) {
+          createOscillator(block.id, block.frequency, block.type as OscillatorType);
+        } else {
+          stopOscillator(block.id);
+        }
+      }
+    }
+  }
+
+  // ブロック削除
+  function deleteBlock(event: CustomEvent) {
+    const { id } = event.detail;
+    blocks = blocks.filter(block => block.id !== id);
+    stopOscillator(id);
+  }
+
+  // ブロック選択
+  function selectBlock(event: CustomEvent) {
+    const { id } = event.detail;
+    selectedBlockId = id;
+  }
+
+  // 右クリックメニュー処理
+  function handleContextMenu(event: MouseEvent, trackId: number) {
+    event.preventDefault();
+    
+    const target = event.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const clickTime = x / pixelsPerSecond;
+    
+    contextMenu = {
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      trackId,
+      clickTime
+    };
+  }
+
+  // メニューを閉じる
+  function closeContextMenu() {
+    contextMenu.visible = false;
+  }
+
+  // オシレーター追加
+  function addOscillator() {
+    if (contextMenu.trackId && contextMenu.visible) {
+      addBlock(contextMenu.trackId, contextMenu.clickTime);
+      closeContextMenu();
+    }
+  }
+
+  // キーボードイベント処理
+  function handleKeyDown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      closeContextMenu();
+      // ブロック選択解除
+      selectedBlockId = null;
+    }
+  }
+
+  // メニュー外クリック処理
+  function handleGlobalClick(event: MouseEvent) {
+    const menuElement = document.querySelector('.context-menu');
+    if (menuElement && !menuElement.contains(event.target as Node)) {
+      closeContextMenu();
+    }
+    
+    // ブロック選択外クリックで選択解除
+    const blockElements = document.querySelectorAll('.oscillator-block');
+    let clickedOnBlock = false;
+    
+    blockElements.forEach(blockElement => {
+      if (blockElement.contains(event.target as Node)) {
+        clickedOnBlock = true;
+      }
+    });
+    
+    if (selectedBlockId !== null && !clickedOnBlock) {
+      selectedBlockId = null;
+    }
   }
 
   function updateTrackFrequency(trackId: number, frequency: number) {
     tracks = tracks.map(track => 
       track.id === trackId ? { ...track, frequency } : track
     );
-    
-    // 再生中なら即座に周波数を更新
-    if (isPlaying) {
-      const oscillator = oscillators.get(trackId);
-      if (oscillator && audioContext) {
-        oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
-      }
-    }
   }
 
   function updateTrackType(trackId: number, type: string) {
     tracks = tracks.map(track => 
       track.id === trackId ? { ...track, type } : track
     );
-    
-    // 再生中なら即座に波形を更新
-    if (isPlaying) {
-      const oscillator = oscillators.get(trackId);
-      if (oscillator) {
-        oscillator.type = type as OscillatorType;
-      }
-    }
   }
 
   // 時間フォーマット
@@ -195,6 +334,10 @@
   }
 
   onMount(() => {
+    // グローバルイベントリスナーを追加
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('click', handleGlobalClick);
+    
     return () => {
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
@@ -203,6 +346,8 @@
       if (audioContext) {
         audioContext.close();
       }
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('click', handleGlobalClick);
     };
   });
 </script>
@@ -212,7 +357,7 @@
   <div class="timeline-header">
     <div class="controls">
       <button class="play-button" on:click={togglePlay}>
-        {isPlaying ? '⏸' : '▶️'}
+        {isPlaying ? '⏸' : '▶'}
       </button>
       <button class="stop-button" on:click={stopPlayback}>⏹</button>
       <span class="time-display">{formatTime(currentTime)} / {formatTime(duration)}</span>
@@ -229,7 +374,7 @@
     <!-- トラックリスト -->
     <div class="track-list">
       <div class="track-header">
-        <span>トラック</span>
+        <span>Track</span>
         <button class="add-track-btn" on:click={addTrack}>+</button>
       </div>
       {#each tracks as track (track.id)}
@@ -237,31 +382,6 @@
           <div class="track-info">
             <span class="track-name">{track.name}</span>
             <button class="remove-track-btn" on:click={() => removeTrack(track.id)}>×</button>
-          </div>
-          <div class="track-controls">
-                         <input 
-               type="number" 
-               value={track.frequency} 
-               on:input={(e) => {
-                 const target = e.target as HTMLInputElement;
-                 updateTrackFrequency(track.id, parseInt(target.value));
-               }}
-               placeholder="周波数"
-               min="20"
-               max="20000"
-             />
-                         <select 
-               value={track.type} 
-               on:change={(e) => {
-                 const target = e.target as HTMLSelectElement;
-                 updateTrackType(track.id, target.value);
-               }}
-             >
-              <option value="sine">正弦波</option>
-              <option value="triangle">三角波</option>
-              <option value="square">矩形波</option>
-              <option value="sawtooth">ノコギリ波</option>
-            </select>
           </div>
         </div>
       {/each}
@@ -288,18 +408,53 @@
       ></div>
 
       <!-- トラック表示エリア -->
-      <div class="tracks-display" on:click={seekTo}>
+      <div 
+        class="tracks-display" 
+        class:selection-mode={selectedBlockId !== null}
+        on:click={seekTo}
+      >
         {#each tracks as track (track.id)}
           <div class="track-display" style="height: {trackHeight}px;">
-            <!-- ここに周波数データの可視化を追加予定 -->
-            <div class="track-visualization">
-              <span class="frequency-label">{track.frequency}Hz</span>
+            <div 
+              class="track-visualization" 
+              on:contextmenu={(e) => handleContextMenu(e, track.id)}
+            >
+              <span class="track-label">{track.name}</span>
+              
+              <!-- このトラックのブロックを表示 -->
+              {#each blocks.filter(block => block.trackId === track.id) as block (block.id)}
+                <OscillatorBlock
+                  id={block.id}
+                  trackId={block.trackId}
+                  startTime={block.startTime}
+                  duration={block.duration}
+                  frequency={block.frequency}
+                  type={block.type}
+                  isSelected={selectedBlockId === block.id}
+                  on:update={updateBlock}
+                  on:delete={deleteBlock}
+                  on:select={selectBlock}
+                />
+              {/each}
             </div>
           </div>
         {/each}
       </div>
     </div>
   </div>
+
+  <!-- 右クリックメニュー -->
+  {#if contextMenu.visible}
+    <div 
+      class="context-menu"
+      style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+    >
+      <div class="menu-item" on:click={addOscillator}>
+        <span class="menu-icon"></span>
+        <span>Add Oscillator</span>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -402,7 +557,6 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.5rem;
   }
 
   .track-name {
@@ -416,22 +570,6 @@
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
     cursor: pointer;
-  }
-
-  .track-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .track-controls input,
-  .track-controls select {
-    background: #3a3a3a;
-    border: 1px solid #4a4a4a;
-    color: white;
-    padding: 0.25rem;
-    border-radius: 4px;
-    font-size: 0.9rem;
   }
 
   .timeline-display {
@@ -482,11 +620,50 @@
     align-items: center;
     padding: 0 1rem;
     height: 100%;
+    position: relative;
+    cursor: pointer;
   }
 
-  .frequency-label {
+  .track-visualization:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .track-label {
     font-family: monospace;
     font-size: 0.9rem;
     color: #888;
+    position: absolute;
+    left: 1rem;
+    z-index: 5;
+  }
+
+  /* 右クリックメニュー */
+  .context-menu {
+    position: fixed;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    min-width: 150px;
+    padding: 0.5rem 0;
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    font-size: 0.9rem;
+  }
+
+  .menu-item:hover {
+    background: #3a3a3a;
+  }
+
+  .menu-icon {
+    font-size: 1rem;
   }
 </style> 
